@@ -9,45 +9,32 @@ import websockets
 from itertools import count, cycle
 import PySimpleGUI as GUI # noqa
 from spotipy.oauth2 import SpotifyOAuth
-from dataclasses import dataclass
+from collections import namedtuple
 from operator import itemgetter
 from pprint import pprint
 
 directory_path = os.path.expandvars("C:/Users/%username%/PolyPop/UIX/Sources/Spotify/{}").format
 spotify_cache_dir = directory_path('.cache')
-
-GUI.theme('Dark')
-GUI.SetOptions(font='helvetica 16', scrollbar_color='gray')
 connected = False
 sp: spotipy.Spotify
 app: asyncio.Future
 client: websockets.ClientConnection
 devices, tasks, queue = ([],)*3
 current_device, current_track, current_shuffle, current_repeat, current_volume, current_state = (None,)*6
-credentials = {'client_id': None, 'client_secret': None}
-queue = []
+credentials = namedtuple(client_id: str = "", client_secret: str = None)
 queue_limit = 10
-
-
-@dataclass()
-class Song:
-    user_id: str
-    song: dict
-
-
-def get_open_port():
-    sock = socket.socket()
-    sock.bind(('', 0))
-    return sock.getsockname()[1]
-
-
-p = os.environ['SPOTIFY_PORT'] = str(get_open_port())
-print(p)
-del p
 
 
 def volume_format(v):
     return float('%.2f' % v)
+
+
+#########################################################################
+# GUI SETUP
+#########################################################################
+
+GUI.theme('Dark')
+GUI.SetOptions(font='helvetica 16', scrollbar_color='gray')
 
 
 def create_layout():
@@ -420,6 +407,17 @@ async def on_message(websocket):
                 await play(data)
             elif action == 'quit':
                 app.done()
+
+            
+p = os.environ['SPOTIFY_PORT'] = str(get_open_port())
+print(p)
+del p
+
+
+def get_open_port():
+    sock = socket.socket()
+    sock.bind(('', 0))
+    return sock.getsockname()[1]
 
 
 async def main():
