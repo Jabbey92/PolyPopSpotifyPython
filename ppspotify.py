@@ -9,18 +9,21 @@ import websockets
 from itertools import count, cycle
 import PySimpleGUI as GUI # noqa
 from spotipy.oauth2 import SpotifyOAuth
+from dataclasses import dataclass
+from operator import itemgetter
+from pprint import pprint
 
 directory_path = os.path.expandvars("C:/Users/%username%/PolyPop/UIX/Sources/Spotify/{}").format
 spotify_cache_dir = './.cache'
 
 GUI.theme('Dark')
 GUI.SetOptions(font='helvetica 16', scrollbar_color='gray')
-
-connected = False
 scope = "user-read-playback-state,user-library-read,user-modify-playback-state,user-read-currently-playing"
+connected = False
 sp: spotipy.Spotify
-client = None
+client: websockets.ClientConnection
 devices = []
+current_device = None
 current_track = None
 current_shuffle = None
 current_repeat = None
@@ -30,7 +33,14 @@ tasks = []
 credentials = {'client_id': None, 'client_secret': None}
 repeat_states = {'Song': 'track', 'Enabled': 'context', 'Disabled': 'off'}
 app: asyncio.Future
-round_volume_to = 5
+queue = []
+queue_limit = 10
+
+
+@dataclass()
+class Song:
+    user_id: str
+    song: dict
 
 
 def get_open_port():
@@ -147,6 +157,7 @@ async def connect_to_spotify(client_id, client_secret, setup=False):
     global current_repeat
     global current_volume
     global current_state
+    global current_device
     global credentials
     if credentials.get('client_id') != client_id and credentials.get('client_secret') != client_secret:
         if setup:
@@ -174,6 +185,7 @@ async def connect_to_spotify(client_id, client_secret, setup=False):
     current_shuffle = current_playback.get('shuffle_state')
     current_repeat = current_playback.get('repeat_state')
     current_volume = volume_format(curr_device.get('volume_percent', 0) / 1)
+    current_device = curr_device.get('id')
     await client.send(json.dumps({
         'action': "spotify_connect",
         'data': {
@@ -210,15 +222,17 @@ def get_devices():
 
 
 async def play(data):
-    device_id = next(d.get('id') for d in get_devices() if d.get('name') == data.get('device_name'))
+    device_id = current_device
     playlist_uri = data.get('playlist_uri')
+    song_uri = data.get('track_uri')
     try:
         if playlist_uri:
             sp.start_playback(device_id=device_id, context_uri=playlist_uri)
-            return
-        sp.start_playback(device_id=device_id)
+        if song_uri:
+            sp.start_playback(device_id=device_id, uris=[song_uri])
         return
-    except spotipy.SpotifyException:
+    except spotipy.SpotifyException as e:
+        print(e)
         await client.send(json.dumps({'action': 'error', 'data': {'command': 'play'}}))
 
 
@@ -250,6 +264,39 @@ def repeat(data):
 
 def volume(data):
     sp.volume(data)
+
+
+async def queue_song(data):
+    search = data.get('search')
+    requester = data.get('requester', 'Broadcaster')
+    position = data.get('position')
+
+    song = sp.search(search, 1)
+    if not search:
+        client.send(json.dumps({
+            'action': 'error',
+            'data': {'command': 'search_error', 'search': song, 'requester': requester}
+        }))
+    elif len(queue) >= queue_limit:
+        client.send(json.dumps({
+            'action': 'error',
+            'data': {'command': 'queue_full'}
+        }))
+    else:
+        if position == -1:
+            await play({'device': current_device, })
+            return
+        pprint(song)
+        queue.append(Song(requester, song['']))
+        client.send(json.dumps({
+            'action': 'added_to_queue',
+            'data': {}
+        }))
+
+
+def set_queue_limit(data):
+    global queue_limit
+    queue_limit = data.get('limit')
 
 
 async def exec_every_x_seconds(timeout, func):
@@ -332,6 +379,15 @@ def update_settings(data):
         current_volume = new_volume
 
 
+async def on_connected(websocket, data):
+    global tasks
+    global client
+    client = websocket
+    client_id, client_secret = data.values()
+    if client_id and client_secret:
+        await connect_to_spotify(client_id, client_secret)
+
+
 track_funcs_no_data = {
     'pause': pause,
     'next': next_track,
@@ -342,16 +398,9 @@ track_funcs_with_data = {
     'shuffle_state': shuffle,
     'repeat_state': repeat,
     'update': update_settings,
-    'volume': volume}
-
-
-async def on_connected(websocket, data):
-    global tasks
-    global client
-    client = websocket
-    client_id, client_secret = data.values()
-    if client_id and client_secret:
-        await connect_to_spotify(client_id, client_secret)
+    'volume': volume,
+    'queue_song': queue_song,
+    'set_queue_limit': set_queue_limit}
 
 
 async def on_message(websocket):
@@ -362,22 +411,25 @@ async def on_message(websocket):
 
             if not action:
                 continue
-            func = track_funcs_no_data.get(action)
-            if func:
-                func()  # noqa
-
             data = payload.get('data')
+
             func = track_funcs_with_data.get(action)
             if func:
                 func(data)
+                continue
+
+            func = track_funcs_no_data.get(action)
+            if func:
+                func()  # noqa
+                continue
 
             if action == 'connected_handshake':
                 await on_connected(websocket, data)
-            if action == 'login':
+            elif action == 'login':
                 await request_spotify_setup()
-            if action == 'play':
+            elif action == 'play':
                 await play(data)
-            if action == 'quit':
+            elif action == 'quit':
                 app.done()
 
 
