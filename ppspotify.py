@@ -1,6 +1,6 @@
 import os
 import asyncio
-import json
+from json import loads, dumps
 import socket
 import webbrowser
 import spotipy
@@ -14,25 +14,17 @@ from operator import itemgetter
 from pprint import pprint
 
 directory_path = os.path.expandvars("C:/Users/%username%/PolyPop/UIX/Sources/Spotify/{}").format
-spotify_cache_dir = './.cache'
+spotify_cache_dir = directory_path('.cache')
 
 GUI.theme('Dark')
 GUI.SetOptions(font='helvetica 16', scrollbar_color='gray')
-scope = "user-read-playback-state,user-library-read,user-modify-playback-state,user-read-currently-playing"
 connected = False
 sp: spotipy.Spotify
-client: websockets.ClientConnection
-devices = []
-current_device = None
-current_track = None
-current_shuffle = None
-current_repeat = None
-current_volume = None
-current_state = None
-tasks = []
-credentials = {'client_id': None, 'client_secret': None}
-repeat_states = {'Song': 'track', 'Enabled': 'context', 'Disabled': 'off'}
 app: asyncio.Future
+client: websockets.ClientConnection
+devices, tasks, queue = ([],)*3
+current_device, current_track, current_shuffle, current_repeat, current_volume, current_state = (None,)*6
+credentials = {'client_id': None, 'client_secret': None}
 queue = []
 queue_limit = 10
 
@@ -110,7 +102,7 @@ async def request_spotify_setup():
 
     while True:
         window = GUI.Window(window_name, create_layout(), resizable=True,
-                            force_toplevel=True, icon='./icon.ico', finalize=True)
+                            force_toplevel=True, icon=directory_path('icon.ico'), finalize=True)
         while True:
             event, values = window.read()
 
@@ -137,41 +129,21 @@ async def request_spotify_setup():
         GUI.popup_ok(f"Missing {missing}", title=f"Missing {missing}")
 
 
-def get_all_playlists():
-    playlists = []
-    for i in count():
-        pl = sp.current_user_playlists(offset=i)
-        playlists.extend(pl.get('items'))
-        if not pl.get('next'):
-            break
-
-    if not playlists:
-        return {0: 'No Playlists'}
-    return {p.get('name'): p.get('uri') for p in playlists}
-
-
 async def connect_to_spotify(client_id, client_secret, setup=False):
-    global sp
-    global client
-    global current_shuffle
-    global current_repeat
-    global current_volume
-    global current_state
-    global current_device
-    global credentials
+    global sp, client, connected, current_shuffle, current_repeat, current_volume, current_state, current_device, credentials
     if credentials.get('client_id') != client_id and credentials.get('client_secret') != client_secret:
         if setup:
             auth_manager = SpotifyOAuth(
                 client_id=client_id,
                 client_secret=client_secret,
                 redirect_uri="http://localhost:38042",
-                scope=scope)
+                scope="user-read-playback-state,user-library-read,user-modify-playback-state,user-read-currently-playing")
         else:
             auth_manager = spotipy.SpotifyPKCE(
                 client_id=client_id,
                 # client_secret=client_secret,
                 redirect_uri="http://localhost:38042",
-                scope=scope)
+                scope="user-read-playback-state,user-library-read,user-modify-playback-state,user-read-currently-playing")
 
         try:
             sp = spotipy.Spotify(auth_manager=auth_manager)
@@ -189,7 +161,7 @@ async def connect_to_spotify(client_id, client_secret, setup=False):
     await client.send(json.dumps({
         'action': "spotify_connect",
         'data': {
-            'name': me["display_name"],
+            'name': me.get('display_name'),
             'user_image_url': me.get('images')[0].get('url'),
             'devices': [d.get('name') for d in get_devices()],
             'current_device': curr_device.get('name'),
@@ -202,12 +174,29 @@ async def connect_to_spotify(client_id, client_secret, setup=False):
             'volume': current_volume
         }
     }))
-    global connected
     connected = True
 
-    tasks.append(asyncio.create_task(exec_every_x_seconds(0.5, check_now_playing)))
-    tasks.append(asyncio.create_task(exec_every_x_seconds(1, check_sp_settings)))
+    tasks.append(asyncio.create_task(exec_every_x_seconds(1, check_now_playing)))
+    tasks.append(asyncio.create_task(exec_every_x_seconds(5, check_sp_settings)))
     # tasks.append(asyncio.create_task(exec_every_x_seconds(5, check_volume)))
+
+    
+def get_all_playlists():
+    playlists = []
+    for i in count():
+        pl = sp.current_user_playlists(offset=i)
+        playlists.extend(pl.get('items'))
+        if not pl.get('next'):
+            break
+
+    if not playlists:
+        return {0: 'No Playlists'}
+    return {p.get('name'): p.get('uri') for p in playlists}
+
+
+async def send(data):
+    for cli_ent in clients:
+        await cli_ent(
 
 
 def clear_tasks():
